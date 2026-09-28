@@ -1,0 +1,107 @@
+# Full stack in containers. Network layout mirrors production:
+#
+#   browser ──► web ──(frontend)──► collab ──(sandbox, internal)──► piston
+#                                     └────(backend, internal)───► postgres
+#
+# `internal: true` networks have no route to the internet or the host, so
+# Piston and Postgres are reachable ONLY from collab.
+name: codether
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-codether}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-codether}
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/<major>/, so mount the parent.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  piston:
+    # Piston needs a privileged container because it sandboxes each job with
+    # isolate (cgroups + namespaces). User code runs with networking disabled.
+    image: ghcr.io/engineer-man/piston:latest
+    restart: unless-stopped
+    privileged: true
+    environment:
+      PISTON_DISABLE_NETWORKING: 'true'
+      PISTON_COMPILE_TIMEOUT: '10000'
+      PISTON_COMPILE_CPU_TIME: '10000'
+      PISTON_RUN_TIMEOUT: '5000'
+      PISTON_RUN_CPU_TIME: '5000'
+      PISTON_RUN_MEMORY_LIMIT: '268435456' # 256 MiB
+      PISTON_COMPILE_MEMORY_LIMIT: '268435456'
+      # Collab truncates output to 64 KiB; Piston's cap is set a bit higher
+      # so collab can detect truncation and add its own marker.
+      PISTON_OUTPUT_MAX_SIZE: '131072'
+      PISTON_MAX_PROCESS_COUNT: '64' # contains fork bombs
+      PISTON_MAX_FILE_SIZE: '10000000'
+      PISTON_MAX_CONCURRENT_JOBS: '4' # sized for a 2 vCPU host
+    volumes:
+      - piston-packages:/piston/packages
+    tmpfs:
+      - /tmp:exec
+    networks: [sandbox]
+
+  collab:
+    build:
+      context: .
+      dockerfile: apps/collab/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      COLLAB_PORT: '4000'
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PISTON_URL: http://piston:2000
+      DATABASE_URL: postgres://${POSTGRES_USER:-codether}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-codether}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      piston:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/api/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks: [frontend, backend, sandbox]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: dev
+    restart: unless-stopped
+    environment:
+      WEB_HOST: 0.0.0.0
+      COLLAB_PROXY_TARGET: http://collab:4000
+    ports:
+      - '127.0.0.1:5173:5173'
+    depends_on:
+      collab:
+        condition: service_healthy
+    networks: [frontend]
+
+networks:
+  frontend: {}
+  backend:
+    internal: true
+  sandbox:
+    internal: true
+
+volumes:
+  pgdata: {}
+  piston-packages: {}

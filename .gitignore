@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+.env
+.env.*
+!.env.example
+
+# Portable toolchain used by the coding agent; not part of the project.
+.tooling/
+
+# Playwright
+test-results/
+playwright-report/

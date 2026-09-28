@@ -1,0 +1,21 @@
+# Local development override: run only postgres + piston in Docker and the
+# apps on the host (`pnpm dev`) for fast reloads.
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres piston
+#
+# Docker can't publish ports from a container that is only on `internal`
+# networks, so this attaches both to an extra `devhost` network and binds
+# them to 127.0.0.1 only. Never use this file in production.
+services:
+  postgres:
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    networks: [devhost]
+
+  piston:
+    ports:
+      - '127.0.0.1:2000:2000'
+    networks: [devhost]
+
+networks:
+  devhost: {}
